@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>超好玩的沈阳站与北站路线图</title>
+    <!-- 引入百度地图 API -->
+    <script src="https://api.map.baidu.com/api?v=3.0&ak=1oL4uLT9ivNdIOb4oqhXmBiAdJDl5Fj8"></script>
+    <!-- 引入测距工具库 -->
+    <script src="https://api.map.baidu.com/library/DistanceTool/1.2/src/DistanceTool_min.js"></script>
+    <style>
+        html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; font-family: sans-serif; }
+        #container { height: calc(100% - 180px); width: 100%; } /* 调整高度以容纳更多控件 */
+        #controls, #options, #tools, #info-panel { padding: 10px; background-color: #f2f2f2; border-top: 1px solid #ccc; }
+        #controls button, #options button, #tools button { margin: 5px; padding: 8px 12px; cursor: pointer; border: 1px solid #ccc; background-color: #fff; border-radius: 4px; }
+        #controls button:hover, #options button:hover, #tools button:hover { background-color: #e0e0e0; }
+        #options span, #tools span, #info-panel span { margin-right: 10px; font-size: 14px; }
+        #info-panel { background-color: #fff; border-top: 1px solid #eee; min-height: 40px; font-size: 13px; color: #333; }
+        #route-details, #distance-result, #poi-result { margin-top: 5px; }
+        #poi-search input { padding: 6px; margin-right: 5px; border: 1px solid #ccc; border-radius: 4px;}
+        .marker-info-window { font-size: 14px; }
+        .marker-info-window img { max-width: 150px; display: block; margin-top: 5px; }
+        /* 滑块样式 */
+        .slider-container { display: inline-block; margin: 0 10px; vertical-align: middle; }
+        .slider-container label { font-size: 14px; margin-right: 5px; }
+        input[type="range"] { width: 100px; }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+
+    <!-- 路线和动画控制 -->
+    <div id="controls">
+        <button onclick="startAnimation()" id="start-btn" disabled>开始动画</button>
+        <button onclick="resetAnimation()" id="reset-btn" disabled>重置动画</button>
+        <button onclick="clearAll()">全部清除</button>
+        <div class="slider-container">
+            <label for="speed-slider">速度:</label>
+            <input type="range" id="speed-slider" min="10" max="200" value="100" step="10" onchange="updateAnimationSpeed()">
+        </div>
+    </div>
+
+    <!-- 选项 -->
+    <div id="options">
+        <span>出行方式:</span>
+        <button onclick="planRoute('driving')">驾车</button>
+        <button onclick="planRoute('walking')">步行</button>
+        <button onclick="planRoute('transit')">公交</button>
+        <span>地图样式:</span>
+        <button onclick="toggleMapStyle()">切换深色/浅色</button>
+    </div>
+
+    <!-- 工具 -->
+    <div id="tools">
+        <span>工具:</span>
+        <button onclick="setMode('setStart')">设置起点</button>
+        <button onclick="setMode('setEnd')">设置终点</button>
+        <button onclick="toggleDistanceTool()">开启/关闭测距</button>
+        <span id="poi-search">
+            <input type="text" id="poi-keyword" placeholder="在地图中心搜索...">
+            <button onclick="searchNearby()">搜索</button>
+        </span>
+    </div>
+
+    <!-- 信息显示 -->
+    <div id="info-panel">
+        <span id="status-message">状态：请先规划路线或设置点。</span>
+        <div id="route-details"></div>
+        <div id="distance-result"></div>
+        <div id="poi-result"></div>
+    </div>
+
+    <script>
+        console.log("地图脚本 V2 开始执行");
+
+        // --- 全局变量 ---
+        let map;
+        let startPoint, endPoint;
+        let startMarker, endMarker;
+        let routeService; // 当前使用的路线服务 (Driving, Walking, Transit)
+        let currentRouteType = null; // 'driving', 'walking', 'transit'
+        let animationTimer;
+        let routePathPoints = [];
+        let isRouteReady = false;
+        let currentStep = 0;
+        const totalSteps = 100; // 保持总步数不变，通过间隔调整速度
+        let animationInterval = 100; // 初始动画间隔 (毫秒) - 值越小越快
+
+        let currentMapStyle = 'normal'; // 'normal' or 'dark'
+        let distanceTool;
+        let isDistanceToolOpen = false;
+        let currentMode = 'none'; // 'none', 'setStart', 'setEnd'
+
+        // --- 图标 ---
+        const trainIcon = new BMap.Icon("https://static.vecteezy.com/system/resources/previews/010/155/649/original/transport-train-icon-sign-design-free-png.png", new BMap.Size(32, 32), {
+            imageSize: new BMap.Size(32, 32),
+            anchor: new BMap.Size(16, 32) // 图标的定位点
+        });
+        const startIcon = new BMap.Icon("https://lbsyun.baidu.com/jsdemo/img/start.png", new BMap.Size(32, 32), {
+            imageSize: new BMap.Size(32, 32),
+            anchor: new BMap.Size(16, 32)
+        });
+         const endIcon = new BMap.Icon("https://lbsyun.baidu.com/jsdemo/img/end.png", new BMap.Size(32, 32), {
+            imageSize: new BMap.Size(32, 32),
+            anchor: new BMap.Size(16, 32)
+        });
+
+        // --- 初始化 ---
+        function initMap() {
+            console.log("初始化地图...");
+            map = new BMap.Map("container", { enableMapClick: false }); // 先禁用默认点击事件
+
+            // 初始坐标 (沈阳站)
+            const initialLng = 123.432791;
+            const initialLat = 41.796767;
+            const initialPoint = new BMap.Point(initialLng, initialLat);
+
+            map.centerAndZoom(initialPoint, 13);
+            map.enableScrollWheelZoom(true);
+            map.enableKeyboard();
+            map.enableContinuousZoom();
+            map.enableInertialDragging();
+
+            // 添加控件
+            map.addControl(new BMap.NavigationControl());
+            map.addControl(new BMap.ScaleControl());
+            map.addControl(new BMap.OverviewMapControl());
+            map.addControl(new BMap.MapTypeControl({ mapTypes: [BMAP_NORMAL_MAP, BMAP_SATELLITE_MAP] })); // 标准和卫星
+
+            // 创建测距工具实例
+            distanceTool = new BMapLib.DistanceTool(map);
+            distanceTool.addEventListener("drawend", function(e) {
+                updateStatus(`测距完成，总距离: ${(e.distance / 1000).toFixed(2)} 公里`);
+                document.getElementById('distance-result').innerText = `测距结果: ${(e.distance / 1000).toFixed(2)} 公里`;
+                isDistanceToolOpen = false; // 测距完成后自动关闭模式
+                 updateStatus("测距结束。");
+            });
+
+             // 添加地图点击事件监听器
+            map.addEventListener('click', handleMapClick);
+
+            // 初始化时设置默认点 (可选)
+            setPoint(new BMap.Point(123.432791, 41.796767), 'start');
+            setPoint(new BMap.Point(123.500413, 41.824103), 'end');
+            updateStatus("地图初始化完成。请选择出行方式规划路线，或点击地图设置新点。");
+        }
+
+        // --- 地图交互 ---
+        function handleMapClick(e) {
+            const clickedPoint = e.point;
+            console.log(`地图点击: ${clickedPoint.lng}, ${clickedPoint.lat}, 当前模式: ${currentMode}`);
+            if (currentMode === 'setStart') {
+                setPoint(clickedPoint, 'start');
+                updateStatus(`设置新起点: ${clickedPoint.lng.toFixed(6)}, ${clickedPoint.lat.toFixed(6)}。请设置终点或规划路线。`);
+                currentMode = 'none'; // 设置后恢复默认模式
+            } else if (currentMode === 'setEnd') {
+                setPoint(clickedPoint, 'end');
+                updateStatus(`设置新终点: ${clickedPoint.lng.toFixed(6)}, ${clickedPoint.lat.toFixed(6)}。请规划路线。`);
+                currentMode = 'none';
+            } else if (isDistanceToolOpen) {
+                 // 如果测距工具开启，则点击事件由测距工具处理，这里不做额外操作
+                 console.log("测距工具处理点击");
+            } else {
+                // 默认模式下点击地图，可以打开信息窗口显示坐标
+                const infoWin = new BMap.InfoWindow(`坐标: ${clickedPoint.lng.toFixed(6)}, ${clickedPoint.lat.toFixed(6)}`, {width: 220});
+                map.openInfoWindow(infoWin, clickedPoint);
+            }
+        }
+
+        function setMode(mode) {
+            currentMode = mode;
+            // 如果开启测距工具时切换模式，先关闭测距
+            if (isDistanceToolOpen && (mode === 'setStart' || mode === 'setEnd')) {
+                toggleDistanceTool(); // 关闭测距
+            }
+            updateStatus(`模式切换: ${mode === 'setStart' ? '请点击地图设置起点' : mode === 'setEnd' ? '请点击地图设置终点' : '无特殊模式'}`);
+        }
+
+        // --- 点和标记管理 ---
+        function setPoint(point, type) {
+            clearRouteAndAnimation(); // 设置新点时清除旧路线和动画状态
+
+            if (type === 'start') {
+                startPoint = point;
+                if (startMarker) map.removeOverlay(startMarker); // 移除旧标记
+                startMarker = new BMap.Marker(startPoint, { icon: startIcon, title: "起点" });
+                startMarker.enableDragging(); // 允许拖拽
+                startMarker.addEventListener("dragend", function(e){
+                    console.log("起点拖拽结束");
+                    setPoint(e.point, 'start'); // 更新起点位置
+                    if(endPoint) planRoute(currentRouteType || 'driving'); // 如果终点存在，重新规划路线
+                });
+                map.addOverlay(startMarker);
+                addMarkerInfoWindow(startMarker, "起点", "这是您选择的起点。");
+            } else if (type === 'end') {
+                endPoint = point;
+                if (endMarker) map.removeOverlay(endMarker);
+                endMarker = new BMap.Marker(endPoint, { icon: endIcon, title: "终点" });
+                endMarker.enableDragging();
+                 endMarker.addEventListener("dragend", function(e){
+                    console.log("终点拖拽结束");
+                    setPoint(e.point, 'end'); // 更新终点位置
+                    if(startPoint) planRoute(currentRouteType || 'driving'); // 如果起点存在，重新规划路线
+                });
+                map.addOverlay(endMarker);
+                addMarkerInfoWindow(endMarker, "终点", "这是您选择的终点。");
+            }
+
+             // 如果起终点都已设置，可以考虑自动缩放视野
+            if (startPoint && endPoint) {
+                 // map.setViewport([startPoint, endPoint]); // 取消自动缩放，让用户手动控制
+            }
+        }
+
+        function addMarkerInfoWindow(marker, title, content) {
+            const infoWindow = new BMap.InfoWindow(`<div class="marker-info-window"><strong>${title}</strong><p>${content}</p></div>`, {width: 200});
+            marker.addEventListener("click", function() {
+                map.openInfoWindow(infoWindow, marker.getPosition());
+            });
+        }
+
+        // --- 路线规划 ---
+        function planRoute(type) {
+            if (!startPoint || !endPoint) {
+                alert("请先通过点击地图或按钮设置起点和终点！");
+                return;
+            }
+            if (!type) type = 'driving'; // 默认驾车
+             currentRouteType = type; // 保存当前路线类型
+
+            console.log(`开始规划 ${type} 路线...`);
+            updateStatus(`正在规划 ${type} 路线...`);
+            clearRouteAndAnimation(); // 清除旧路线和动画状态
+
+            const routeOptions = {
+                renderOptions: { map: map, autoViewport: true, /*panel: "route-details" // 可以指定一个div来显示文本结果 */ }
+            };
+
+            let searchCallback = function(results) {
+                console.log(`${type} 路线搜索完成回调`);
+                let status = routeService.getStatus();
+                if (status == BMAP_STATUS_SUCCESS) {
+                    console.log(`${type} 路线规划成功！`);
+                    isRouteReady = true;
+                    const plan = results.getPlan(0);
+                    const route = plan.getRoute(0);
+
+                     if (route && typeof route.getPath === 'function') { // 确保getPath存在
+                         routePathPoints = route.getPath();
+                         console.log(`成功获取路径点，数量: ${routePathPoints.length}`);
+                          enableAnimationButtons();
+                          displayRouteInfo(plan); // 显示路线信息
+                          updateStatus(`${type} 路线规划成功！距离: ${plan.getDistance(true)}, 时间: ${plan.getDuration(true)}。可以开始动画了。`);
+                     } else {
+                          console.error("错误: 无法获取路径点。");
+                          routePathPoints = []; // 重置路径点
+                          isRouteReady = false;
+                           // 公交路线可能没有单一的 getPath，处理方式不同
+                          if (type === 'transit') {
+                               console.log("公交路线规划成功，但路径点获取方式不同，动画暂不支持。");
+                               enableAnimationButtons(false); // 禁用动画按钮
+                               displayRouteInfo(plan);
+                               updateStatus(`公交路线规划成功！距离: ${plan.getDistance(true)}, 时间: ${plan.getDuration(true)}。公交路线暂不支持动画。`);
+                               isRouteReady = false; // 公交不支持动画
+                          } else {
+                              alert("错误：未能获取有效的路线路径点。");
+                              updateStatus(`${type} 路线规划失败：无法获取路径点。`);
+                              disableAnimationButtons();
+                          }
+                     }
+
+                } else {
+                    console.error(`${type} 路线规划失败，状态码: ${status}`);
+                    isRouteReady = false;
+                    routePathPoints = [];
+                    disableAnimationButtons();
+                    displayRouteInfo(null); // 清除路线信息
+                    let errorMsg = handleRouteError(status, type);
+                    alert(errorMsg);
+                    updateStatus(`${type} 路线规划失败: ${errorMsg}`);
+                }
+            };
+
+            // 根据类型选择服务
+            switch (type) {
+                case 'walking':
+                    routeService = new BMap.WalkingRoute(map, routeOptions);
+                    break;
+                case 'transit':
+                     // 公交路线结果通常更复杂，可能需要特定处理
+                     routeOptions.renderOptions.panel = "route-details"; // 公交建议显示在面板
+                     routeService = new BMap.TransitRoute(map, routeOptions);
+                    break;
+                case 'driving':
+                default:
+                    routeService = new BMap.DrivingRoute(map, routeOptions);
+                    break;
+            }
+            routeService.setSearchCompleteCallback(searchCallback);
+            routeService.search(startPoint, endPoint);
+        }
+
+        function handleRouteError(status, type) {
+             switch (status) {
+                case BMAP_STATUS_UNKNOWN_LOCATION: return "地点位置未知";
+                case BMAP_STATUS_UNKNOWN_ROUTE: return `${type} 路线方案未知或距离过长`;
+                case BMAP_STATUS_INVALID_KEY: return "API Key无效或未授权";
+                case BMAP_STATUS_NETWORK_ERROR: return "网络连接错误";
+                case BMAP_STATUS_PERMISSION_DENIED: return "没有权限";
+                default: return `未知错误 (代码: ${status})`;
+            }
+        }
+
+         function displayRouteInfo(plan) {
+            const detailsDiv = document.getElementById('route-details');
+            if (plan && currentRouteType !== 'transit') { // 公交路线的详细信息由 renderOptions.panel 控制
+                const distance = plan.getDistance(true); // true 返回带单位的字符串
+                const duration = plan.getDuration(true); // true 返回带单位的字符串
+                detailsDiv.innerHTML = `<strong>路线信息:</strong> 距离约 ${distance}，预计时间 ${duration}`;
+            } else if (plan && currentRouteType === 'transit') {
+                 detailsDiv.innerHTML = `<strong>公交路线详情见地图或指定面板</strong><br>总距离约 ${plan.getDistance(true)}，总时间约 ${plan.getDuration(true)}`;
+            }
+             else {
+                detailsDiv.innerHTML = ""; // 清空
+            }
+        }
+
+
+        // --- 动画控制 ---
+         function startAnimation() {
+            console.log("尝试开始动画...");
+            if (!isRouteReady || routePathPoints.length < 2 || currentRouteType === 'transit') {
+                alert("请先成功规划一条驾车或步行路线！公交路线暂不支持动画。");
+                return;
+            }
+            if (animationTimer) clearInterval(animationTimer); // 清除旧定时器
+            console.log("开始动画，总步数: " + totalSteps + ", 间隔: " + animationInterval + "ms");
+            updateStatus("动画进行中...");
+
+            currentStep = 0;
+            // 确保标记是自定义图标
+            if(startMarker) startMarker.setIcon(trainIcon);
+            if(endMarker) endMarker.setIcon(trainIcon);
+
+            animationTimer = setInterval(() => {
+                if (currentStep <= totalSteps) {
+                    // marker1 (起点) 沿路径前进
+                    let index1 = Math.min(routePathPoints.length - 1, Math.floor(currentStep * (routePathPoints.length - 1) / totalSteps));
+                    // marker2 (终点) 沿路径后退
+                    let index2 = Math.max(0, routePathPoints.length - 1 - Math.floor(currentStep * (routePathPoints.length - 1) / totalSteps));
+
+                    const currentPoint1 = routePathPoints[index1];
+                    const currentPoint2 = routePathPoints[index2];
+
+                    if (currentPoint1 && currentPoint2 && startMarker && endMarker) {
+                        startMarker.setPosition(currentPoint1);
+                        endMarker.setPosition(currentPoint2);
+                    } else {
+                         console.error(`动画错误：步骤 ${currentStep} 获取点或标记失败`);
+                         clearInterval(animationTimer);
+                         updateStatus("动画出错停止。");
+                         return;
+                    }
+                    currentStep++;
+                } else {
+                    console.log("动画完成。");
+                    clearInterval(animationTimer);
+                    animationTimer = null;
+                    updateStatus("动画完成！");
+                    // 动画结束后可以停在中间点
+                     const finalIndex = Math.floor((routePathPoints.length - 1) / 2);
+                    if (routePathPoints[finalIndex] && startMarker && endMarker) {
+                        startMarker.setPosition(routePathPoints[finalIndex]);
+                        endMarker.setPosition(routePathPoints[finalIndex]);
+                    }
+                    // 恢复原始图标
+                    if(startMarker) startMarker.setIcon(startIcon);
+                    if(endMarker) endMarker.setIcon(endIcon);
+                }
+            }, animationInterval); // 使用可变的间隔
+        }
+
+        function resetAnimation() {
+            console.log("重置动画...");
+            if (animationTimer) clearInterval(animationTimer);
+            animationTimer = null;
+            currentStep = 0;
+            // 将标记重置回路线的起点和终点
+            if (isRouteReady && routePathPoints.length > 0) {
+                 if (startMarker) startMarker.setPosition(routePathPoints[0]);
+                 if (endMarker) endMarker.setPosition(routePathPoints[routePathPoints.length - 1]);
+                  // 恢复原始图标
+                 if(startMarker) startMarker.setIcon(startIcon);
+                 if(endMarker) endMarker.setIcon(endIcon);
+                 updateStatus("动画已重置。");
+            } else if (startPoint && endPoint) {
+                 // 如果没有路线，重置回初始点
+                 if (startMarker) startMarker.setPosition(startPoint);
+                 if (endMarker) endMarker.setPosition(endPoint);
+                 if(startMarker) startMarker.setIcon(startIcon);
+                 if(endMarker) endMarker.setIcon(endIcon);
+                 updateStatus("标记已重置到设定点。");
+            } else {
+                 updateStatus("请先设置点或规划路线。");
+            }
+        }
+
+        function updateAnimationSpeed() {
+            const sliderValue = document.getElementById('speed-slider').value;
+            // sliderValue 越大表示越慢，所以间隔应该反过来
+            // 例如 slider=10 (最快) -> interval=10; slider=200 (最慢) -> interval=200
+            animationInterval = parseInt(sliderValue);
+            console.log("动画速度更新，新间隔:", animationInterval + "ms");
+            // 如果动画正在进行，需要清除并用新间隔重启（可选，或者只影响下次开始）
+            if (animationTimer) {
+                 console.log("动画进行中，将以新速度重新开始当前步");
+                 clearInterval(animationTimer);
+                 startAnimation(); // 用新间隔重启
+            }
+        }
+
+        // --- 清除与重置 ---
+         function clearRouteAndAnimation() {
+            console.log("清除路线和动画状态...");
+            if (animationTimer) clearInterval(animationTimer);
+            animationTimer = null;
+            if (routeService) {
+                 try { routeService.clearResults(); } catch(e) { console.warn("清除路线结果时出错:", e); }
+            }
+            routePathPoints = [];
+            isRouteReady = false;
+            currentStep = 0;
+            disableAnimationButtons();
+            displayRouteInfo(null); // 清除显示的路线信息
+            document.getElementById('route-details').innerHTML = ""; // 确保清除公交面板信息
+
+             // 恢复起点和终点标记的原始图标 (如果存在)
+            if (startMarker) startMarker.setIcon(startIcon);
+            if (endMarker) endMarker.setIcon(endIcon);
+        }
+
+        function clearAll() {
+            console.log("执行全部清除...");
+            clearRouteAndAnimation();
+
+            // 清除点和标记
+            if (startMarker) map.removeOverlay(startMarker);
+            if (endMarker) map.removeOverlay(endMarker);
+            startPoint = null;
+            endPoint = null;
+            startMarker = null;
+            endMarker = null;
+
+             // 关闭测距工具
+             if(isDistanceToolOpen) toggleDistanceTool();
+             document.getElementById('distance-result').innerText = "";
+
+              // 清除POI搜索结果
+             clearPoiResults();
+             document.getElementById('poi-keyword').value = "";
+
+
+            currentMode = 'none';
+            currentRouteType = null;
+            updateStatus("状态已重置。请重新设置起点和终点。");
+        }
+
+         // --- 地图样式 ---
+        function toggleMapStyle() {
+            if (currentMapStyle === 'normal') {
+                map.setMapStyleV2({ styleId: '黑暗风格ID' }); // 替换为您的黑暗风格ID 或使用 styleJson
+                // 如果没有自定义ID，可以使用预设（可能需要额外库或不同版本API）
+                // 示例: map.setMapStyleV2({styleJson: BMap.MapStyle.DARK }); // 假设存在预设
+                 // 暂时用官方文档提供的示例 JSON 代替，需要您获取自己的 styleId 或 styleJson
+                 map.setMapStyleV2({styleId: 'your_dark_style_id'}); // <--- 替换这里
+                 // 如果没有ID，可以尝试用 JSON，例如：
+                 // const darkStyleJson = [ { "featureType": "all", "elementType": "all", "stylers": { "lightness": -40, "saturation": -100 } }, ... ]; // 完整的 JSON
+                 // map.setMapStyleV2({ styleJson: darkStyleJson });
+                 currentMapStyle = 'dark';
+                 updateStatus("地图样式切换为：深色");
+                 console.log("切换到深色地图样式 (请确保 styleId 或 styleJson 有效)");
+                 alert("请在代码中替换 'your_dark_style_id' 为您在百度地图开放平台申请的有效深色样式ID，或者提供完整的 styleJson。");
+
+            } else {
+                map.setMapStyleV2({ styleId: '' }); // 清除自定义样式，恢复默认
+                currentMapStyle = 'normal';
+                updateStatus("地图样式切换为：普通");
+                console.log("切换回普通地图样式");
+            }
+        }
+
+
+        // --- 搜索功能 (POI) ---
+        function searchNearby() {
+            const keyword = document.getElementById('poi-keyword').value;
+            if (!keyword) {
+                alert("请输入搜索关键词！");
+                return;
+            }
+            const center = map.getCenter(); // 在地图中心点附近搜索
+            const localSearch = new BMap.LocalSearch(map, {
+                renderOptions: { map: map, autoViewport: true, selectFirstResult: false }, // 在地图上标记结果
+                pageCapacity: 8, // 每页显示多少条结果
+                onSearchComplete: function(results) {
+                    const poiResultDiv = document.getElementById('poi-result');
+                    poiResultDiv.innerHTML = `<strong>"${keyword}" 搜索结果:</strong><br>`;
+                    if (localSearch.getStatus() == BMAP_STATUS_SUCCESS) {
+                        let s = [];
+                        for (let i = 0; i < results.getCurrentNumPois(); i++) {
+                            const poi = results.getPoi(i);
+                            s.push(`${i + 1}. ${poi.title} (${poi.address})`);
+                        }
+                        poiResultDiv.innerHTML += s.join("<br>");
+                         updateStatus(`搜索到 ${results.getCurrentNumPois()} 个结果。`);
+                    } else {
+                         poiResultDiv.innerHTML += "未找到结果或搜索出错。";
+                         updateStatus(`搜索 "${keyword}" 未找到结果。`);
+                    }
+                }
+            });
+            localSearch.searchNearby(keyword, center, 10000); // 搜索中心点10公里范围
+            updateStatus(`正在搜索 "${keyword}"...`);
+        }
+         function clearPoiResults(){
+             // 实际应用中可能需要移除地图上的搜索标记点
+             // BMap.LocalSearch 的 renderOptions 会自动添加标记，清除它们比较麻烦
+             // 一个简单方法是重新规划路线或清除所有覆盖物
+             map.clearOverlays(); // 注意：这会清除所有东西，包括起终点标记，需要重新添加
+             if(startMarker) map.addOverlay(startMarker);
+             if(endMarker) map.addOverlay(endMarker);
+             // 更好的方法是获取 LocalSearch 添加的标记并逐个移除，但这需要更复杂的代码
+             document.getElementById('poi-result').innerHTML = "";
+             console.log("POI搜索结果已清除（简单清除文本，地图标记可能需要更复杂处理）");
+         }
+
+
+        // --- 测距工具 ---
+        function toggleDistanceTool() {
+            if (isDistanceToolOpen) {
+                distanceTool.close();
+                isDistanceToolOpen = false;
+                 updateStatus("测距工具已关闭。");
+            } else {
+                 // 关闭其他模式
+                 currentMode = 'none';
+                distanceTool.open();
+                isDistanceToolOpen = true;
+                 updateStatus("测距工具已开启，请在地图上点击绘制距离。");
+                 document.getElementById('distance-result').innerText = "测距结果: ...";
+            }
+        }
+
+
+        // --- UI 更新 ---
+        function updateStatus(message) {
+            document.getElementById('status-message').innerText = `状态：${message}`;
+            console.log(`状态更新: ${message}`);
+        }
+
+        function enableAnimationButtons(enable = true) {
+            document.getElementById('start-btn').disabled = !enable;
+            document.getElementById('reset-btn').disabled = !enable;
+        }
+         function disableAnimationButtons() {
+             enableAnimationButtons(false);
+         }
+
+
+        // --- 页面加载完成后执行 ---
+        window.onload = initMap;
+
+        // --- 全局错误处理 ---
+        window.onerror = function(message, source, lineno, colno, error) {
+            console.error("捕获到全局错误:", { message, source, lineno, colno, error });
+            updateStatus(`页面脚本错误: ${message}`);
+        };
+
+    </script>
+</body>
+</html>
+
