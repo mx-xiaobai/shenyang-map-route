@@ -91,20 +91,19 @@
         let isDistanceToolOpen = false;
         let currentMode = 'none'; // 'none', 'setStart', 'setEnd'
 
-        // --- 图标 ---
+                 // --- 图标 ---
         const trainIcon = new BMap.Icon("https://static.vecteezy.com/system/resources/previews/010/155/649/original/transport-train-icon-sign-design-free-png.png", new BMap.Size(32, 32), {
             imageSize: new BMap.Size(32, 32),
             anchor: new BMap.Size(16, 32) // 图标的定位点
         });
-        const startIcon = new BMap.Icon("https://lbsyun.baidu.com/jsdemo/img/start.png", new BMap.Size(32, 32), {
+        const startIcon = new BMap.Icon("https://api.map.baidu.com/images/marker_red.png", new BMap.Size(32, 32), {
             imageSize: new BMap.Size(32, 32),
             anchor: new BMap.Size(16, 32)
         });
-         const endIcon = new BMap.Icon("https://lbsyun.baidu.com/jsdemo/img/end.png", new BMap.Size(32, 32), {
+         const endIcon = new BMap.Icon("https://api.map.baidu.com/images/marker_green.png", new BMap.Size(32, 32), {
             imageSize: new BMap.Size(32, 32),
             anchor: new BMap.Size(16, 32)
         });
-
         // --- 初始化 ---
         function initMap() {
             console.log("初始化地图...");
